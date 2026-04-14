@@ -14,9 +14,25 @@
 
 ---
 
+## Table of Contents
+
+- [The Setup](#the-setup)
+- [How Go Modules Can Betray You](#how-go-modules-can-betray-you)
+- [The Attack, Visualized](#the-attack-visualized)
+- [🪤 Phase 1 — The Trojan Dependency](#-phase-1--the-trojan-dependency)
+- [☠️ Phase 2 — The Poisoned Proxy](#-phase-2--the-poisoned-proxy)
+- [📡 Phase 3 — The Beacon That Never Dies](#-phase-3--the-beacon-that-never-dies)
+- [The C2 Server](#the-c2-server)
+- [Why Your Defenses Probably Don't Catch This](#why-your-defenses-probably-dont-catch-this)
+- [How to Actually Stop It](#how-to-actually-stop-it)
+- [Closing](#closing)
+- [References](#references)
+
+---
+
 ## The Setup
 
-Picture a perfectly ordinary Go project. Someone adds a new dependency — a lightweight SDK, looks clean, has tests, uses logrus for structured logging. Nothing suspicious. Merges into main.
+Picture a perfectly ordinary Go project. Someone adds a new dependency — `theme-heartbeat`, a lightweight SDK for UI theme config management. Looks clean, has tests, uses logrus for structured logging. Nothing suspicious. Merges into main.
 
 Two minutes later, a `GITHUB_TOKEN` with `repo` scope posts itself to a server in a Frankfurt data center.
 
@@ -114,9 +130,9 @@ The write-once-read-forever property is the scary part: once the binary is built
 
 ---
 
-## Phase 1 — The Trojan Dependency
+## 🪤 Phase 1 — The Trojan Dependency
 
-The malicious package is `github.com/gopkg-utils/go-weather-sdk` — a credible weather forecast SDK with a real HTTP client, a TTL cache, logrus logging, and passing tests. Entirely usable. The payload lives in `analytics.go`.
+The malicious package is `github.com/gopkg-utils/theme-heartbeat` — a UI theme configuration client with a heartbeat monitor. Fetches color schemes, dark/light mode configs, font settings from a remote endpoint. Has a TTL cache, logrus logging, and passing tests. Entirely usable. The payload lives in `analytics.go`.
 
 ### The C2 URL hidden in plain sight
 
@@ -156,7 +172,7 @@ func _env(a, b string) string { return os.Getenv(a + b) }
 
 ```go
 func init() {
-    if os.Getenv("WEATHER_SDK_TELEMETRY") == "off" {
+    if os.Getenv("THEME_SDK_TELEMETRY") == "off" {
         return
     }
     _reportAdoption()
@@ -214,7 +230,7 @@ Redirecting `GOMODCACHE` to an empty `/tmp` directory routes around the whole th
 
 ---
 
-## Phase 2 — The Poisoned Proxy
+## ☠️ Phase 2 — The Poisoned Proxy
 
 The C2 server speaks the [Go module proxy protocol](https://go.dev/ref/mod#goproxy-protocol). It forwards everything to `proxy.golang.org` except for one module: `github.com/sirupsen/logrus@v1.9.4`, which gets a surgically modified zip.
 
@@ -232,7 +248,7 @@ And that looks completely normal.
 
 ---
 
-## Phase 3 — The Beacon That Never Dies
+## 📡 Phase 3 — The Beacon That Never Dies
 
 `telemetry.go` is injected into the logrus package, declares `package logrus`, and adds an `init()`:
 
@@ -314,7 +330,7 @@ The ngrok URL gets baked into `telemetry.go` at zip-build time. When the beacon 
 |------------------------|---------------------|
 | `go vet` / `staticcheck` / `gosec` | Pass. No unsafe code, no hardcoded strings, no known bad patterns |
 | Snyk / Socket.dev | Likely pass — no install hooks, no known-bad imports |
-| Code review | `analytics.go` looks like telemetry. Every comment is plausible. |
+| Code review | `analytics.go` looks like telemetry. `theme-heartbeat` sounds boring. Every comment is plausible. |
 | go.sum pinning | go.sum *is* updated — just with the attacker's hash |
 | Dependency scanning | Targets install hooks (npm `preinstall`, etc). `init()` fires at runtime. |
 
@@ -367,4 +383,4 @@ The `GOMODCACHE` redirect was the non-obvious part — several attempts failed b
 
 ---
 
-*Full C2 source: [`goproxy_server.py`](./goproxy_server.py) · malicious package: `github.com/gopkg-utils/go-weather-sdk`*
+*Full C2 source: [`goproxy_server.py`](./goproxy_server.py) · malicious package: `github.com/gopkg-utils/theme-heartbeat`*
