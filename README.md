@@ -361,10 +361,10 @@ Job-level env vars are set before any step runs and **cannot be overridden by `G
 
 A few more things worth doing:
 
-- **Alert on `GITHUB_ENV` writes from unexpected processes.** `go test` has no legitimate reason to modify the build environment. Falco or Tetragon can catch this at the syscall level.
-- **Watch `go.sum` diffs in PRs.** A hash changing without a version bump in `go.mod` is a red flag.
-- **When reviewing a new dependency**, grep for `init()` functions in files named `analytics.go`, `telemetry.go`, `metrics.go`. That's where this kind of payload lives.
 - Of course apply **network restrictions** on your github runners. This is really effective, no matter the attack path
+- perform package scanning (*easy to say, you have to find your right tool I know..*)
+- **Alert on `GITHUB_ENV` writes from unexpected processes.** `go test` has no legitimate reason to modify the build environment. Falco or Tetragon can catch this at the syscall level.
+
 ---
 
 ## Closing
