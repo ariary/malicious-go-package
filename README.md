@@ -334,6 +334,8 @@ The ngrok URL gets baked into `telemetry.go` at zip-build time. When the beacon 
 | go.sum pinning | go.sum *is* updated — just with the attacker's hash |
 | Dependency scanning | Targets install hooks (npm `preinstall`, etc). `init()` fires at runtime. |
 
+I also ran `theme-heartbeat` through [guarddog](https://github.com/DataDog/guarddog), Datadog's Go package scanner — what a defender would actually do before merging a new dependency. Zero findings. The IP-octet URL doesn't look like a URL. The concatenated `"GO"+"PROXY"` doesn't look like an env var name. The `init()` writing to `$GITHUB_ENV` doesn't match any exfiltration pattern. Clean bill of health. This isn't a knock on guarddog — it's that its semgrep rules are very precise: they match specific known-bad patterns, not what the code actually computes at runtime.
+
 There are four layers of evasion working together:
 
 1. **The URL** — encoded as IPv4 octets. No string resembling `http://` anywhere.
