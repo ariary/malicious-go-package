@@ -334,7 +334,14 @@ The ngrok URL gets baked into `telemetry.go` at zip-build time. When the beacon 
 | go.sum pinning | go.sum *is* updated — just with the attacker's hash |
 | Dependency scanning | Targets install hooks (npm `preinstall`, etc). `init()` fires at runtime. |
 
-I also ran `theme-heartbeat` through [guarddog](https://github.com/DataDog/guarddog), Datadog's Go package scanner — what a defender would actually do before merging a new dependency. Zero findings. The IP-octet URL doesn't look like a URL. The concatenated `"GO"+"PROXY"` doesn't look like an env var name. The `init()` writing to `$GITHUB_ENV` doesn't match any exfiltration pattern. Clean bill of health. This isn't a knock on guarddog — it's that its semgrep rules are very precise: they match specific known-bad patterns, not what the code actually computes at runtime.
+I ran `theme-heartbeat` through two scanners a defender might actually use:
+
+| Tool | Finding on `analytics.go` | Why |
+|------|--------------------------|-----|
+| [guarddog](https://github.com/DataDog/guarddog) (Datadog) | **0 findings** | Semgrep rules match specific known-bad patterns — IP-octet URL, concatenated strings, and `GITHUB_ENV` writes don't match any of them |
+| [socket.dev](https://socket.dev) | **`gptSecurity` MIDDLE** (ignored by default) | GPT model flagged "import-time supply-chain interference… injects Go proxy/module configuration into the CI environment via `GITHUB_ENV`" — right diagnosis, wrong severity to block a PR |
+
+socket.dev gets the intent right but only sees Phase 1 in isolation: `analytics.go` poisons the build environment but doesn't exfiltrate anything itself. The actual theft happens later in the logrus beacon (Phase 2), which isn't part of this package. Without that context, the GPT model caps it at MIDDLE severity — suspicious, not malicious — and default policies ignore it.
 
 There are four layers of evasion working together:
 
