@@ -338,10 +338,12 @@ I ran `theme-heartbeat` through two scanners a defender might actually use:
 
 | Tool | Finding on `analytics.go` | Why |
 |------|--------------------------|-----|
-| [guarddog](https://github.com/DataDog/guarddog) (Datadog) | **0 findings** | Semgrep rules match specific known-bad patterns — IP-octet URL, concatenated strings, and `GITHUB_ENV` writes don't match any of them |
-| [socket.dev](https://socket.dev) | **`gptSecurity` MIDDLE** (ignored by default) | GPT model flagged "import-time supply-chain interference… injects Go proxy/module configuration into the CI environment via `GITHUB_ENV`" — right diagnosis, wrong severity to block a PR |
+| [guarddog](https://github.com/DataDog/guarddog) (Datadog) | **0 findings** | Semgrep rules match specific known-bad patterns — IP-octet URL, concatenated strings, `GITHUB_ENV` writes don't match any of them |
+| [socket.dev](https://socket.dev) | **`gptSecurity` MIDDLE** (ignored by default) | GPT model got the intent right — but only sees Phase 1 in isolation. No exfiltration in this file means it caps at MIDDLE, which default policies ignore |
 
-socket.dev gets the intent right but only sees Phase 1 in isolation: `analytics.go` poisons the build environment but doesn't exfiltrate anything itself. The actual theft happens later in the logrus beacon (Phase 2), which isn't part of this package. Without that context, the GPT model caps it at MIDDLE severity — suspicious, not malicious — and default policies ignore it.
+**Going stealthier.** One change: move the go.sum pruning out of `analytics.go` into `cache.go`, encoding the logrus module name as a hex color palette — `#676974 #687562 #2e636f ...` — that decodes to `github.com/sirupsen/logrus` at runtime. Natural fit for a theme SDK. No single file holds the full picture anymore.
+
+Supply chain score: **0.99** 😎. The remaining finding: *"no classic malware… no exec, reverse shell, file damage, or network exfiltration."* Correct — that part is in the binary you already shipped.
 
 There are four layers of evasion working together:
 
