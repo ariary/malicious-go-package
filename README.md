@@ -9,7 +9,7 @@
 ---
 
 **Attack chain:** GOPROXY substitution → go.sum poisoning → persistent binary beacon  
-**Stealth level:** Zero errors, zero logs, binary behaves identically, 2 stages payload injection (better than basic `init()` malware) - ** Malware is in the binary not the code**  
+**Stealth level:** Zero errors, zero logs, binary behaves identically, 2 stages payload injection (better than basic `init()` malware) - **Malware is in the binary not the code**  
 **Persistence:** Beacon is compiled in — fires on every run, everywhere, forever
 
 ---
