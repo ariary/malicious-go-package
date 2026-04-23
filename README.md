@@ -1,7 +1,7 @@
 # Silently Backdooring a Golang Binary in GitHub Actions
 
 > [!NOTE]
-> This article was written with significant help from an LLM. I own every idea, experiment, and line of code in it — the AI helped me articulate them, not think them. 😄
+> This article was written with significant help from an LLM. I own every idea, experiment, and line of code in it. the AI helped me articulate them, not think them. 😄
 
 > [!IMPORTANT]
 > This article is published for **educational purposes and knowledge sharing only**. Bla-Bla-Bla [...] Be responsible ✌️
@@ -9,7 +9,7 @@
 ---
 
 **Attack chain:** GOPROXY substitution → go.sum poisoning → persistent binary beacon  
-**Stealth level:** Zero errors, zero logs, binary behaves identically - ** Malware is in the binary not the code**  
+**Stealth level:** Zero errors, zero logs, binary behaves identically, 2 stages payload injection (better than basic `init()` malware) - ** Malware is in the binary not the code**  
 **Persistence:** Beacon is compiled in — fires on every run, everywhere, forever
 
 ---
