@@ -27,6 +27,7 @@
 - [How to Actually Stop It](#how-to-actually-stop-it)
 - [Closing](#closing)
 - [References](#references)
+- [V2: Beyond These Defenses](#v2--beyond-these-defenses)
 
 ---
 
@@ -370,9 +371,11 @@ env:
 
 Job-level env vars are set before any step runs and **cannot be overridden by `GITHUB_ENV` writes**. That's it. The whole attack assumes it can redirect where Go looks for modules — pin those variables and there's nothing to redirect.
 
+> **Spoiler:** [V2](./v2/README.md) bypasses this. It replaces the `go` binary instead of setting environment variables. Job-level `env:` never reaches the real compiler.
+
 A few more things worth doing:
 
-- Of course apply **network restrictions** on your github runners. This is really effective, no matter the attack path
+- Of course apply **network restrictions** on your github runners. This is really effective, no matter the attack path (though [V2](./v2/README.md) shows egress restrictions alone are not enough, the poisoning can happen entirely locally)
 - perform package scanning before adding them (*easy to say, you have to find your right tool I know..*)
 - **Alert on `GITHUB_ENV` writes from unexpected processes.** `go test` has no legitimate reason to modify the build environment. Falco or Tetragon can catch this at the syscall level.
 
@@ -395,3 +398,15 @@ The `GOMODCACHE` redirect was the non-obvious part — several attempts failed b
 ---
 
 *Full C2 source: [`goproxy_server.py`](./goproxy_server.py) · malicious package: `github.com/gopkg-utils/theme-heartbeat`*
+
+---
+
+## V2: Beyond These Defenses
+
+Think the job-level `env:` fix is bulletproof? What if the malicious code doesn't *set* environment variables, what if it replaces the `go` binary itself?
+
+V2 hijacks `$PATH` via `$GITHUB_PATH`, installs a wrapper that `exec`s the real compiler with forced flags, and uses a local `file://` proxy. No outbound connection to the attacker during the build. No `$GITHUB_ENV` writes. Job-level env pinning never reaches the real Go binary.
+
+**[Read the full V2 writeup →](./v2/README.md)**
+
+*V2 source: [`v2/theme-heartbeat/analytics.go`](./v2/theme-heartbeat/analytics.go)*
